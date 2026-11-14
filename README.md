@@ -81,8 +81,9 @@ including for the panel's version probe; they run only under
 a shell the sandbox cannot confine.
 
 `engines.dsh` is `>=0.2.2-0`: the plugin needs the 0.2.2 shell seam
-(`resolve`/`execute`) and the config-api settings page. Check
-[testing.md](docs/testing.md) for what has actually been exercised.
+(`resolve`/`execute`) and the config-api settings page. CI runs the suites on
+Windows, Linux, and macOS; the platform column above states what this plugin has
+measured itself rather than what the harness documents.
 
 ## Configuration
 
@@ -150,6 +151,12 @@ command stays literal; write `call echo %CD%` when you need expansion. Non-ASCII
 output depends on the console code page. Unicode paths and filenames are
 unaffected.
 
+**`wsl.exe` diagnostics arrive garbled.** With no distribution installed, `wsl`
+writes its "run `wsl.exe --install`" message as UTF-16LE, which the output
+collector decodes as UTF-8 and shows as mojibake. The command itself ran and its
+exit code is reported; only the wording is unreadable. Decoding belongs to the
+subprocess seam, so this plugin does not re-encode it.
+
 **Routes the selector does not control.** Agent commands go through the selected
 shell, but `run_code` program bodies, PTY-based terminal tools, and out-of-process
 subagents spawn their own processes. The full list, with reasons, is in
@@ -185,8 +192,21 @@ npm test
 ```
 
 See [architecture.md](docs/architecture.md) for how a call is decided and why the
-harness packages are resolved at runtime rather than declared as dependencies, and
-[testing.md](docs/testing.md) for what each suite covers.
+harness packages are resolved at runtime rather than declared as dependencies.
+
+The suites live in `tests/` and run against the built output under `lib/`, which
+is what a profile installs:
+
+| Suite | Covers |
+|---|---|
+| `catalog` | Both platforms' catalogs, entry identity, the identity guard, the confinement verdicts, candidate enumeration, and probe selection |
+| `dialects` | Whole-argv assertions per dialect, the `cmd` environment transport, WSL mount translation, and version queries |
+| `discovery` | Resolution through the seam, a configured path failing by name, and the working-directory rule |
+| `executor` | The decision and its refusals (zero spawns), `auto` on both platforms, the model-facing description, and the status surfaces |
+| `tool` | One `shell` tool, the `bash`/`pwsh` guard, both call presentations, and the background job path |
+| `config` | The configuration model's defaults and refusals, and the form derived from it |
+| `status` | The three facts staying apart, and the self-test's failure stages |
+| `package` | The package contract: entry points, shipped files, locale, icon, and `engines.dsh` |
 
 ## License
 

@@ -74,7 +74,8 @@ dsh plugin --profile web add link:/absolute/path/to/dsh-shell-select
 Shell。
 
 `engines.dsh` 为 `>=0.2.2-0`：插件需要 0.2.2 的 shell seam（`resolve`/`execute`）
-与 config-api 设置页。实际验证过的内容见 [testing.md](docs/testing.md)。
+与 config-api 设置页。CI 在 Windows、Linux、macOS 三个平台跑测试套件；上表的平台
+一列说明的是本插件**自己实测**的结果，而非宿主文档的描述。
 
 ## 配置
 
@@ -131,6 +132,11 @@ Shell 与模式；请选择该模式能限制的 Shell，或故意把会话切�
 需要展开时写 `call echo %CD%`。非 ASCII 输出取决于控制台代码页。Unicode 路径与文件名
 不受影响。
 
+**`wsl.exe` 的诊断信息显示为乱码。** 未安装任何发行版时，`wsl` 以 UTF-16LE 写出
+「请运行 `wsl.exe --install`」之类的提示，而输出收集器按 UTF-8 解码，于是显示为乱码。
+命令本身已执行、退出码也如实报告，只是措辞无法阅读。解码归 subprocess seam 负责，
+本插件不重新编码。
+
 **选择器不控制的路径。** 智能体命令走所选 Shell，但 `run_code` 的程序体、基于 PTY 的
 终端工具、以及进程外子智能体会自行创建进程。完整清单与原因见
 [architecture.md](docs/architecture.md#execution-routes-covered-and-not-covered)。
@@ -164,8 +170,20 @@ npm test
 ```
 
 一次调用如何被决定、宿主包为何在运行时解析而不是声明为依赖，见
-[architecture.md](docs/architecture.md)；每个套件覆盖什么，见
-[testing.md](docs/testing.md)。
+[architecture.md](docs/architecture.md)。
+
+测试套件位于 `tests/`，针对 `lib/` 下的构建产物运行（即 profile 实际安装的内容）：
+
+| 套件 | 覆盖内容 |
+|---|---|
+| `catalog` | 两个平台的目录、条目身份、身份守卫、限制结论、候选枚举与探测选择 |
+| `dialects` | 每个方言的完整 argv、`cmd` 的环境变量传输、WSL 挂载路径翻译、版本查询 |
+| `discovery` | 经 seam 解析、显式路径按名失败、工作目录规则 |
+| `executor` | 决策与各类拒绝（零次 spawn）、两个平台的 `auto`、模型可见描述、状态表面 |
+| `tool` | 单一 `shell` 工具、`bash`/`pwsh` 守卫、两种调用卡片、后台任务路径 |
+| `config` | 配置模型的默认值与拒绝、由它派生的表单 |
+| `status` | 三类事实各自独立、自检的失败阶段 |
+| `package` | 包契约：入口、随包文件、locale、图标、`engines.dsh` |
 
 ## 许可证
 
