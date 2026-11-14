@@ -88,6 +88,17 @@ jobs:
           registry-url: ${{ env.NPM_REGISTRY }}
       - name: Install locked dependencies
         run: npm ci
+      # The suites assert the REPOSITORY's own facts — most notably that
+      # `package.json` carries a stable X.Y.Z version — so they run before the
+      # step below rewrites that version for the dev channel. Running them after
+      # it would make the assertion depend on the release plumbing rather than on
+      # what a reviewer of this commit can see.
+      - name: Regression tests
+        env:
+          # This job runs on ubuntu, so it needs the POSIX scratch root the
+          # suites require: outside the profile and outside /tmp.
+          DSH_SHELL_SELECT_TEST_TMP: '/var/tmp/dsh-shell-select'
+        run: node --test tests/*.test.mjs
       - name: Resolve publish version
         id: release
         shell: bash
@@ -131,12 +142,6 @@ jobs:
           echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
       - name: Build package
         run: npm run build
-      - name: Regression tests
-        env:
-          # The publish job runs on ubuntu, so it needs the POSIX scratch root
-          # the suites require: outside the profile and outside /tmp.
-          DSH_SHELL_SELECT_TEST_TMP: '/var/tmp/dsh-shell-select'
-        run: node --test tests/*.test.mjs
       - name: Inspect npm package contents
         run: npm pack --dry-run
       - name: Check whether the version already exists
