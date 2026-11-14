@@ -152,17 +152,36 @@ describe('candidate enumeration', () => {
     assert.deepEqual(candidates, ['bash.exe'])
   })
 
-  it('reads this process\u2019s environment when no explicit one is given', () => {
-    // The fallback is what makes discovery work at all for a shell whose install
-    // root is only knowable from PATH; without it PATH-derived candidates are
-    // empty and every such shell reports "not installed".
+  it('reads this process\u2019s environment only where this process IS that world', () => {
+    // The fallback is what makes discovery work for a shell whose install root is
+    // only knowable from PATH. It is also the one place a host/platform mismatch
+    // can leak in: a POSIX process's PATH is `:`-separated and holds POSIX paths,
+    // so reading it as a Windows PATH would yield one "entry" holding the whole
+    // list and a candidate like `\opt\bin:\home\runner\bin\bash.exe`.
     const entry = findEntry('windows', 'gitbash')
-    const withProcessEnv = entry.candidates(undefined)
-    assert.ok(withProcessEnv.length >= 1)
-    // Every Windows candidate is a Windows path, never a host-dependent join.
-    for (const candidate of withProcessEnv) {
+    const candidates = entry.candidates(undefined)
+    assert.ok(candidates.length >= 1)
+    for (const candidate of candidates) {
       assert.equal(/^[A-Za-z]:[\\/]/u.test(candidate) || candidate === 'bash.exe', true, candidate)
     }
+    if (localPlatform() === 'windows') {
+      // This host's own PATH is a Windows PATH, so the Git install root is
+      // derivable and the bare name is not the whole list.
+      assert.ok(candidates.length > 1, 'this Windows host should derive PATH candidates')
+      assert.ok(candidates.some(candidate => candidate.toLowerCase().includes('\\git\\')),
+        `no Git install root derived from PATH: ${candidates.slice(0, 3).join(', ')}`)
+    } else {
+      // No Windows environment to read here, so the bare name is the only answer.
+      assert.deepEqual(candidates, ['bash.exe'])
+    }
+  })
+
+  it('treats an explicit environment as the execution world, on any host', () => {
+    // A caller describing a remote Windows world passes its environment
+    // explicitly; that value is honoured regardless of the local platform.
+    const entry = findEntry('windows', 'gitbash')
+    const candidates = entry.candidates({ PATH: 'D:\\Git\\cmd' })
+    assert.deepEqual(candidates.slice(0, 2), ['D:\\Git\\bin\\bash.exe', 'D:\\Git\\usr\\bin\\bash.exe'])
   })
 
   it('prefers %ComSpec% for cmd, then the bare name', () => {

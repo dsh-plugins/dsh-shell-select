@@ -122,21 +122,32 @@ const POSIX_SHELL_SYNTAX =
 
 /**
  * Read one environment variable as a string.
- *
- * An absent `env` means *this process's environment*, which is the local default
- * and the same default the harness's own `candidatePwshPaths` takes. A caller
- * with an explicit environment (a remote execution world, a registration-time
- * lookup with a scrubbed PATH) supplies it and this function reads only that.
- * Without the fallback, `gitbash` would derive no install roots at all on a host
- * whose Git is exactly where PATH says it is.
  * @param env - environment to read.
  * @param name - variable name.
  * @returns the value, or undefined when absent or empty.
  */
 function envValue(env: Environment | undefined, name: string): string | undefined {
-  const source: Environment = env ?? process.env
-  const value = source[name]
+  const value = env?.[name]
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+/**
+ * The environment a *Windows* catalog entry reads when the caller supplies none.
+ *
+ * An absent `env` means "the environment of the world you are describing", and
+ * only this process's own environment can stand in for that — but only when this
+ * process IS that world. A POSIX host's `PATH` is `:`-separated and holds POSIX
+ * paths, so feeding it to the Windows entries would build nonsense like
+ * `\opt\hostedtoolcache\...:\home\runner\bin\bash.exe`: one "entry" containing
+ * the entire colon-joined list, joined with a Windows separator. A POSIX host has
+ * no Windows Git Bash to find anyway, so the honest answer there is "no
+ * environment to read" and the entry falls back to its bare program name.
+ * @param env - the caller's explicit environment, if any.
+ * @returns the environment to read for a Windows entry.
+ */
+function windowsEnvironment(env: Environment | undefined): Environment {
+  if (env !== undefined) return env
+  return process.platform === 'win32' ? process.env : {}
 }
 
 /**
@@ -200,12 +211,13 @@ function gitRootsFromPath(env: Environment | undefined): string[] {
  * @returns candidate paths.
  */
 function gitBashCandidates(env: Environment | undefined): string[] {
+  const world = windowsEnvironment(env)
   const candidates: string[] = []
-  for (const root of gitRootsFromPath(env)) {
+  for (const root of gitRootsFromPath(world)) {
     candidates.push(win32.join(root, 'bin', 'bash.exe'))
     candidates.push(win32.join(root, 'usr', 'bin', 'bash.exe'))
   }
-  for (const entry of pathEntries(env)) {
+  for (const entry of pathEntries(world)) {
     const lower = entry.toLowerCase()
     if (lower.includes('system32') || lower.includes('windowsapps')) continue
     candidates.push(win32.join(entry, 'bash.exe'))
@@ -226,7 +238,7 @@ function gitBashCandidates(env: Environment | undefined): string[] {
  * @returns candidate paths, in Windows form.
  */
 function powershellCandidates(env: Environment | undefined, pick: 'current' | 'legacy'): string[] {
-  const known = host.pwshLocal.candidatePwshPaths((env ?? process.env) as NodeJS.ProcessEnv)
+  const known = host.pwshLocal.candidatePwshPaths(windowsEnvironment(env) as NodeJS.ProcessEnv)
   const isWindowsPowershell = (candidate: string): boolean => candidate.toLowerCase().includes('windowspowershell')
   return known
     .filter(candidate => pick === 'legacy' ? isWindowsPowershell(candidate) : !isWindowsPowershell(candidate))
@@ -284,7 +296,10 @@ const ENTRIES: Readonly<Record<Platform, readonly CatalogEntry[]>> = {
         + 'IMPORTANT: `%NAME%` is NOT expanded — the command reaches cmd in one pass, so write `call ...` '
         + 'when you need cmd to expand a variable, for example `call echo %CD%`. '
         + 'Runs as `cmd /d /q /c`: AutoRun is skipped and echo is off. ',
-      candidates: env => [...new Set([envValue(env, 'ComSpec'), 'cmd.exe'].filter((value): value is string => value !== undefined))],
+      candidates: env => {
+        const world = windowsEnvironment(env)
+        return [...new Set([envValue(world, 'ComSpec'), 'cmd.exe'].filter((value): value is string => value !== undefined))]
+      },
       supportsLoginShell: false,
     },
     {
@@ -316,7 +331,7 @@ const ENTRIES: Readonly<Record<Platform, readonly CatalogEntry[]>> = {
         + '/mnt/<drive>/... (for example D:\\work becomes /mnt/d/work). Windows-style paths (C:\\...) are '
         + 'NOT valid here. Runs inside the WSL distribution. ',
       candidates: env => {
-        const systemRoot = envValue(env, 'SystemRoot')
+        const systemRoot = envValue(windowsEnvironment(env), 'SystemRoot')
         return [...new Set([
           'wsl.exe',
           ...systemRoot === undefined ? [] : [win32.join(systemRoot, 'System32', 'wsl.exe')],
