@@ -79,6 +79,55 @@ export const name = PLUGIN_NAME
  */
 export const inject = ['dshLoader', 'tools', 'systemPrompt', 'shellEnv', 'subprocess', 'sandbox', 'sandboxPolicy']
 
+/**
+ * How long activation waits for the first selection probe before it gives up.
+ *
+ * Long enough to cover a cold `stat` walk over a network `PATH`, short enough
+ * that a seam which never answers cannot look like a slow start.
+ */
+export const SELECTION_DEADLINE_MS = 5_000
+
+/**
+ * Wait for one selection probe, but never longer than `deadlineMs`, and never
+ * fatally.
+ *
+ * The probe only refines the cached description: `describeShell()` reports
+ * `pending` until it lands, and every command resolves its own shell on demand.
+ * That makes the wait optional — and an optional wait must not decide whether
+ * the plugin activates. The host publishes its Web surface only after every
+ * entry's `apply` settles, so a subprocess seam that answers late (or never)
+ * would otherwise turn one pending description into a boot that never finishes.
+ * @param probe - the refresh whose settlement is awaited.
+ * @param label - the activation step named in the diagnostic.
+ * @param warn - sink for a timeout or failure; `apply` passes its logger.
+ * @param deadlineMs - the longest wait, in milliseconds.
+ * @returns nothing; a timeout or rejection is reported through `warn`.
+ */
+export async function awaitSelection(
+  probe: Promise<unknown>,
+  label: string,
+  warn: (message: string) => void,
+  deadlineMs: number = SELECTION_DEADLINE_MS,
+): Promise<void> {
+  const budget = Math.max(1, Math.trunc(deadlineMs))
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      probe,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`the ${label} selection probe did not settle within ${String(budget)} ms`))
+        }, budget)
+      }),
+    ])
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    warn(`dsh-select: ${detail}; the tool keeps the pending selection and resolves a shell on demand`)
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 /** The subset of the dsh-loader host API this plugin uses. */
 type DshLoaderApi = Pick<HostAPI, 'config' | 'dshVersion'>
 
@@ -96,7 +145,11 @@ export async function apply(ctx: Context, config: PluginConfig | undefined): Pro
   // the form below has registered.
   let current: ResolvedPluginConfig = resolvePluginConfig(config)
   const executor = new ShellSelectExecutor(ctx, executorConfig(current), () => current)
-  await executor.ready
+  // Activation must not wait for the selection probe. The executor already
+  // published a provisional selection synchronously, the tool reports it as
+  // `pending`, and every call resolves its own shell — so the wait is optional,
+  // and an optional wait must not hold the host's boot (see `awaitSelection`).
+  void awaitSelection(executor.ready, 'mount', message => { ctx.logger?.warn?.(message) })
 
   ctx.effect(() => () => { /* the executor is owned by this context */ }, 'dsh-shell-select: executor')
 
@@ -115,12 +168,16 @@ export async function apply(ctx: Context, config: PluginConfig | undefined): Pro
     { effect: fn => ctx.effect(() => fn() ?? (() => {})) },
     createConfigTemplate(),
   )
-  const applySnapshot = async (): Promise<void> => {
+  const applySnapshot = (): void => {
+    // The new configuration is in force synchronously; only the cached
+    // description trails, so a save never makes a page wait on the seam.
     current = resolvePluginConfig(handle.get().value)
-    await executor.bindSettings(() => current)
+    void awaitSelection(executor.bindSettings(() => current), 'configuration change', message => {
+      ctx.logger?.warn?.(message)
+    })
   }
-  await applySnapshot()
-  ctx.effect(() => handle.watch(() => { void applySnapshot() }), 'dsh-shell-select: configuration changes')
+  applySnapshot()
+  ctx.effect(() => handle.watch(applySnapshot), 'dsh-shell-select: configuration changes')
 
   /**
    * The panel's operation context carries the committed configuration, so the

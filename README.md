@@ -141,6 +141,14 @@ override yet, or the override names nothing installed. Automatic is resolved for
 its own configurations, which is a different question from what the saved
 selection runs.
 
+**A warning says the selection probe did not settle.** Activation waits at most
+`SELECTION_DEADLINE_MS` (5 s) for the first resolution and then continues without
+it, so the plugin still mounts and the `shell` tool still resolves a shell for
+each call. The warning points at the host's `subprocess` seam, not at the
+selection: until that seam answers, the description reports the selection as
+*pending* and the status panel's **Refresh status** retries the same resolution
+on demand.
+
 **The plugin does not load, and the message names anchors.** `src/host.ts` could
 not find a harness ≥ 0.2.2 to bind to. The message lists every anchor that was
 tried; set `DSH_SHELL_SELECT_HOST_ANCHOR` to the absolute path of the running
@@ -206,6 +214,7 @@ is what a profile installs:
 | `tool` | One `shell` tool, the `bash`/`pwsh` guard, both call presentations, and the background job path |
 | `config` | The configuration model's defaults and refusals, and the form derived from it |
 | `status` | The three facts staying apart, and the self-test's failure stages |
+| `activation` | That a stalled or failing selection probe can never hold activation (and therefore the host's boot), and that its timeout is reported instead of thrown |
 | `package` | The package contract: entry points, shipped files, locale, icon, and `engines.dsh` |
 
 ## License
