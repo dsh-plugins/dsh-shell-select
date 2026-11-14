@@ -1,0 +1,10 @@
+{
+  "name": "@dsh-plugin/dsh-shell-select",
+  "latest": "0.0.1",
+  "publishedAt": "2026-11-14T07:55:01.257Z",
+  "dist": {
+    "tarball": "https://registry.npmjs.org/@dsh-plugin/dsh-shell-select/-/dsh-shell-select-0.0.1.tgz",
+    "integrity": "sha512-GFPY7h4zqERdynKv74opwdmAbpYptQAW9F/J6KdOC+oQIejR9oRh1iRSu5sS2zb73NxBDOa4BJotZXIR/TE9Dw==",
+    "unpackedSize": 397407
+  }
+}
