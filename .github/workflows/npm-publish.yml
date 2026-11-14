@@ -88,6 +88,11 @@ jobs:
           registry-url: ${{ env.NPM_REGISTRY }}
       - name: Install locked dependencies
         run: npm ci
+      # Build first: the suites import the BUILT output under `lib/`, which is what
+      # a profile installs, so they cannot run against a tree that has not been
+      # compiled.
+      - name: Build package
+        run: npm run build
       # The suites assert the REPOSITORY's own facts — most notably that
       # `package.json` carries a stable X.Y.Z version — so they run before the
       # step below rewrites that version for the dev channel. Running them after
@@ -140,8 +145,6 @@ jobs:
           echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
           echo "version=$PUBLISH_VERSION" >> "$GITHUB_OUTPUT"
           echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
-      - name: Build package
-        run: npm run build
       - name: Inspect npm package contents
         run: npm pack --dry-run
       - name: Check whether the version already exists
