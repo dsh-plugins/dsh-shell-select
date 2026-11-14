@@ -1,7 +1,8 @@
 # foldpak excludes nothing beyond .gitignore by default, and .gitignore cannot
-# name .git. This file is what keeps repository history and pnpm scratch out of a
+# name .git. This file is what keeps repository history and build output out of a
 # packed review artifact. The lockfile IS included: an install a reviewer can
 # reproduce needs it.
 .git
 node_modules
+lib
 .test-tmp

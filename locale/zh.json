@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Shell 选择",
+    "description": "选择模型命令运行所使用的 Shell——PowerShell、cmd、Git Bash、WSL、bash、zsh、fish 或 sh；支持自动探测、显式路径覆盖、逐 Shell 状态事实与固定自检。"
+  }
+}

@@ -14,13 +14,17 @@
  * that resolves elsewhere must not be able to pass a lexical check.
  */
 
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
 import { Context, Service } from '@deepseek-ai/cordis'
 import { SubprocessExecutableNotFoundError } from '@deepseek-ai/dsh-subprocess'
-import { localPlatform } from '../src/catalog.js'
+
+import { localPlatform } from '../lib/catalog.js'
+import { ShellSelectExecutor, executorConfig } from '../lib/executor.js'
+import { resolvePluginConfig } from '../lib/config.js'
 
 /** Absolute path of this project's root: the directory holding `package.json`. */
 export function projectRoot() {
@@ -36,23 +40,6 @@ export function projectRoot() {
  * explicitly rather than guessed.
  */
 export const TEST_TMP_ENV = 'DSH_SHELL_SELECT_TEST_TMP'
-
-/**
- * The real user profile directories no fixture may live under.
- *
- * Read, never assigned: these are the machine's own facts about where the user's
- * files are, and a test that wrote to one would be testing in the user's home.
- * @returns canonical profile roots, longest first.
- */
-export function profileRoots() {
-  const candidates = [process.env.USERPROFILE, process.env.HOME, homedir()]
-  const roots = new Set()
-  for (const candidate of candidates) {
-    if (typeof candidate !== 'string' || candidate.length === 0) continue
-    roots.add(canonicalize(candidate))
-  }
-  return [...roots].sort((left, right) => right.length - left.length)
-}
 
 /**
  * Canonicalize a path that may not exist yet.
@@ -80,49 +67,47 @@ export function canonicalize(path) {
   }
 }
 
-/** Whether a path is one of the profile roots or inside one. */
-function isInsideProfile(path) {
-  const canonical = canonicalize(path)
-  const separator = sep
-  return profileRoots().some(root => canonical === root
-    || canonical.toLowerCase().startsWith(`${root.toLowerCase()}${separator}`))
+/**
+ * The real user profile directories no fixture may live under.
+ * @returns canonical profile roots, longest first.
+ */
+export function profileRoots() {
+  const candidates = [process.env.USERPROFILE, process.env.HOME, homedir()]
+  const roots = new Set()
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.length === 0) continue
+    roots.add(canonicalize(candidate))
+  }
+  return [...roots].sort((left, right) => right.length - left.length)
 }
 
 /**
- * Assert a directory is an approved place to create fixtures in.
- *
- * Refuses a location inside the real user profile, whether it came from the
- * default or from the environment: the rule is about the location, not about who
- * asked for it. It also refuses a root that exists as a file, which would
- * otherwise fail later as a confusing `mkdir`.
- * @param path - the proposed fixture root.
- * @returns the path, once it is allowed.
- * @throws {Error} when the root is inside the profile or is not a directory.
+ * Whether a canonical path lies inside a user profile.
+ * @param path - a canonical absolute path.
+ * @returns whether it is profile-contained.
  */
-export function assertApprovedFixtureRoot(path) {
-  if (isInsideProfile(path)) {
+export function isInsideProfile(path) {
+  return profileRoots().some(root => path === root || path.startsWith(root + sep))
+}
+
+/**
+ * Refuse a fixture root the profile rule forbids.
+ * @param root - the candidate scratch root.
+ * @returns the canonical root.
+ * @throws {Error} when the root is profile-contained.
+ */
+export function assertApprovedFixtureRoot(root) {
+  const canonical = canonicalize(root)
+  if (isInsideProfile(canonical)) {
     throw new Error(
-      `test helpers: refusing to create fixtures in the user profile: ${path}. `
-      + `This checkout has no approved scratch outside the profile, so name one with `
-      + `${TEST_TMP_ENV}=<absolute path outside the profile> and run the suite again.`,
+      `test helpers: ${canonical} lies inside the user profile; set ${TEST_TMP_ENV} to an absolute scratch root outside it`,
     )
   }
-  try {
-    if (!statSync(path).isDirectory()) throw new Error('not a directory')
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      throw new Error(`test helpers: the fixture root is not usable: ${path} (${error.message})`)
-    }
-  }
-  return path
+  return canonical
 }
 
 /**
  * The scratch root every disposable fixture lives under.
- *
- * `DSH_SHELL_SELECT_TEST_TMP` when set — an absolute path the user approved —
- * otherwise `<projectRoot>/.test-tmp`. Either way the result is validated against
- * the profile rule before it is used.
  * @returns the absolute fixture root.
  * @throws {Error} when the root is not absolute, or is inside the user profile.
  */
@@ -170,11 +155,6 @@ export function workdirFor(platform, hostWorkdir) {
 
 /**
  * Delete one fixture directory, refusing anything outside its scratch root.
- *
- * A guard rather than a bare `rmSync`: a bug that passed a resolved user path
- * here would delete real files, so containment is decided on canonical paths
- * every time, and the profile rule is re-checked rather than assumed from
- * creation time.
  * @param path - the fixture directory to remove.
  */
 export function removeFixture(path) {
@@ -204,17 +184,15 @@ export class StubSandboxPolicy extends Service {
     this.workspaceRoot = config.workspaceRoot
   }
 
-  /** @returns the configured policy, optionally overridden per call. */
+  /**
+   * @param request - an optional per-call mode override.
+   * @returns the configured policy.
+   */
   resolve(request = {}) {
     return {
       mode: request.mode ?? this.defaultMode,
       workspaceRoot: this.workspaceRoot,
     }
-  }
-
-  /** @returns no session override: this stub keeps no session state. */
-  overrideOf() {
-    return undefined
   }
 }
 
@@ -237,9 +215,7 @@ function makeHandle(spec, outcome, output) {
  *
  * `resolveExecutable` mirrors the real provider's contract: a name it does not
  * know raises `SubprocessExecutableNotFoundError`, which is exactly what
- * discovery must treat as "try the next candidate". `delayMsFor` and
- * `onResolve` exist so a suite can make one resolution slower than another, or
- * change the world while a call is being prepared.
+ * discovery must treat as "try the next candidate".
  * @param options - platform, default shell, resolvable names, spawn outcome,
  *   per-command resolution delay, and a hook run during resolution.
  * @returns the seam stand-in plus its recorded calls.
@@ -250,11 +226,10 @@ export function stubSubprocess(options = {}) {
   return {
     spawns,
     resolutions,
-    /** Scripted name→path table; absolute paths resolve to themselves. */
     resolvable: options.resolvable ?? {},
     platform: options.platform ?? 'posix',
     defaultShell: options.defaultShell,
-    async resolveExecutable(command, _env, _signal) {
+    async resolveExecutable(command) {
       resolutions.push(command)
       options.onResolve?.(command, resolutions.length)
       const delay = options.delayMsFor?.(command, resolutions.length)
@@ -263,8 +238,6 @@ export function stubSubprocess(options = {}) {
       }
       const known = this.resolvable[command]
       if (known !== undefined) return known
-      // An absolute path is verified by the real provider; the stub accepts it
-      // only when the scripted table says it exists.
       throw new SubprocessExecutableNotFoundError(
         `stub-subprocess: command ${JSON.stringify(command)} was not found`,
       )
@@ -288,7 +261,7 @@ export function stubSubprocess(options = {}) {
  *
  * Returns the caller's argv unchanged, which is enough for the executor's
  * argv-construction assertions; real confinement behavior is exercised by the
- * integration suite against the shipped provider.
+ * end-to-end run against the shipped provider.
  * @param options - an optional `confine` replacing the pass-through, so a suite
  *   can script a runner failure or a refusal.
  * @returns the provider stand-in plus its recorded calls.
@@ -331,4 +304,21 @@ export async function makeContext(options = {}) {
     },
   })
   return ctx
+}
+
+/**
+ * Mount the executor over the stubs, configured by one plugin configuration.
+ *
+ * The executor is constructed directly rather than through `ctx.plugin`: its
+ * budgets and its selection both come from the dsh-loader form, and the
+ * constructor's third argument is where that live source is handed in.
+ * @param ctx - the context {@link makeContext} built.
+ * @param config - a partial plugin configuration.
+ * @returns the mounted executor.
+ */
+export async function mountExecutor(ctx, config = {}) {
+  const resolved = resolvePluginConfig(config)
+  const executor = new ShellSelectExecutor(ctx, executorConfig(resolved), () => resolved)
+  await executor.ready
+  return executor
 }

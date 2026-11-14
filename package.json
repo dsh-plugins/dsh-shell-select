@@ -1,22 +1,34 @@
 {
-  "name": "dsh-shell-select",
-  "version": "0.1.0",
+  "name": "@dsh-plugin/dsh-shell-select",
+  "version": "1.0.0",
   "description": "DeepSeek Harness plugin: one model-facing `shell` tool whose shell is a user setting. Resolves and validates through the harness's own seams, and refuses to run when the selected shell cannot be confined.",
-  "license": "MIT",
   "type": "module",
-  "main": "index.js",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
   "exports": {
-    ".": "./index.js",
-    "./client": "./client.js",
-    "./package.json": "./package.json"
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "icon": "./icon.svg",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
   "files": [
-    "index.js",
-    "client.js",
-    "src",
+    "lib",
+    "locale",
+    "docs",
     "cordis.patch.yml",
+    "icon.svg",
     "README.md",
-    "docs"
+    "README.zh_CN.md",
+    "LICENSE"
   ],
   "keywords": [
     "deepseek-harness",
@@ -34,96 +46,49 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/athif23/dsh-shell-select.git"
+    "url": "git+https://github.com/dsh-plugins/dsh-shell-select.git"
   },
   "bugs": {
-    "url": "https://github.com/athif23/dsh-shell-select/issues"
+    "url": "https://github.com/dsh-plugins/dsh-shell-select/issues"
   },
-  "homepage": "https://github.com/athif23/dsh-shell-select#readme",
+  "homepage": "https://github.com/dsh-plugins/dsh-shell-select#readme",
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": ">=24.9.0",
+    "dsh": ">=0.2.2-0"
   },
-  "packageManager": "pnpm@10.11.0",
   "scripts": {
-    "test": "node --test \"test/**/*.spec.mjs\"",
-    "test:execution": "node --test test/integration.spec.mjs test/cmd-command-transport.spec.mjs"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "platform": "web"
-    }
-  },
-  "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "clean": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('lib', { recursive: true, force: true });\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "prepack": "npm run build"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-bash-local": "^0.1.6-alpha.1",
-    "@deepseek-ai/dsh-jobs": "^0.1.6-alpha.1",
-    "@deepseek-ai/dsh-llm": "^0.1.6-alpha.1",
-    "@deepseek-ai/dsh-pwsh-local": "^0.1.6-alpha.1",
-    "@deepseek-ai/dsh-sandbox": "^0.1.6-alpha.1",
-    "@deepseek-ai/dsh-shell": "^0.1.6-alpha.1",
-    "@deepseek-ai/dsh-shell-env": "^0.1.6-alpha.1",
-    "@deepseek-ai/dsh-subprocess": "^0.1.6-alpha.1",
-    "@deepseek-ai/dsh-system-prompt": "^0.1.6-alpha.1",
-    "@deepseek-ai/dsh-tools": "^0.1.6-alpha.1"
+    "@dsh-plugin/dsh-loader": "^2.0.0-dev.41570953193"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.2",
-    "@deepseek-ai/dsh-bash-local": "0.1.6-alpha.1",
-    "@deepseek-ai/dsh-llm": "0.1.6-alpha.1",
-    "@deepseek-ai/dsh-pwsh-local": "0.1.6-alpha.1",
-    "@deepseek-ai/dsh-sandbox": "0.1.6-alpha.1",
-    "@deepseek-ai/dsh-sandbox-local": "0.1.6-alpha.1",
-    "@deepseek-ai/dsh-settings-file": "0.1.6-alpha.1",
-    "@deepseek-ai/dsh-shell": "0.1.6-alpha.1",
-    "@deepseek-ai/dsh-subprocess": "0.1.6-alpha.1",
-    "@deepseek-ai/dsh-subprocess-local": "0.1.6-alpha.1",
-    "@deepseek-ai/dsh-tools": "0.1.6-alpha.1"
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-agent": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-bash-local": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-jobs": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-pwsh-local": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-sandbox": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-sandbox-policy": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-shell": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-shell-env": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-timeout": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-user-approval": "^0.2.2-rc.2",
+    "@deepseek-ai/dsh-util-values": "^0.2.2-rc.2",
+    "@dsh-plugin/dsh-loader": "2.0.0-dev.41570953193",
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.3"
   },
-  "peerDependenciesMeta": {
-    "@deepseek-ai/cordis": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-bash-local": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-jobs": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-llm": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-pwsh-local": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-sandbox": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-shell": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-shell-env": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-subprocess": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-system-prompt": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-tools": {
-      "optional": true
-    }
-  },
+  "license": "MIT",
   "publishConfig": {
     "access": "public"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": []
   }
 }

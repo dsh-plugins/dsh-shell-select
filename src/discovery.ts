@@ -22,18 +22,39 @@
 
 import { statSync } from 'node:fs'
 import { posix } from 'node:path'
-import { SubprocessExecutableNotFoundError } from '@deepseek-ai/dsh-subprocess'
-import { catalogFor, checkIdentity, localPlatform } from './catalog.js'
 
-/**
- * The absolute-path test each execution platform uses for a working directory.
- *
- * The Windows rule is a drive path or a UNC share rather than
- * `path.win32.isAbsolute`, which also accepts a root-relative `/tmp` whose drive
- * is whichever one the process happens to be on. A working directory has to name
- * one unambiguous place, so the narrower rule is the correct one.
- */
-const ABSOLUTE_WORKDIR = {
+import {
+  catalogFor,
+  checkIdentity,
+  localPlatform,
+  type CatalogEntry,
+  type Environment,
+  type Platform,
+} from './catalog.js'
+import { host } from './host.js'
+
+/** The slice of `ctx.subprocess` this module needs. */
+export interface ResolverContext {
+  readonly subprocess: {
+    resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string>
+  }
+}
+
+/** What one resolution produced. */
+export interface ShellResolution {
+  /** The canonical executable path. */
+  readonly path: string
+  /** Whether the path came from configuration or from discovery. */
+  readonly source: 'configured' | 'discovered'
+}
+
+/** The failure-tolerant view of one resolution, for status surfaces. */
+export type ShellInspection =
+  | { readonly available: true; readonly path: string; readonly source: 'configured' | 'discovered' }
+  | { readonly available: false; readonly detail: string }
+
+/** The absolute-path test each execution platform uses for a working directory. */
+const ABSOLUTE_WORKDIR: Readonly<Record<Platform, (path: string) => boolean>> = {
   windows: path => /^[A-Za-z]:[\\/]/u.test(path) || path.startsWith('\\\\'),
   posix: path => posix.isAbsolute(path),
 }
@@ -46,15 +67,34 @@ const ABSOLUTE_WORKDIR = {
  * @param signal - cancellation.
  * @returns the canonical path, or undefined when the candidate is absent.
  */
-async function tryResolve(ctx, candidate, env, signal) {
+async function tryResolve(
+  ctx: ResolverContext,
+  candidate: string,
+  env: Environment | undefined,
+  signal: AbortSignal | undefined,
+): Promise<string | undefined> {
   try {
-    return await ctx.subprocess.resolveExecutable(candidate, env, signal)
+    return await ctx.subprocess.resolveExecutable(candidate, env === undefined ? undefined : { ...env } as Record<string, string>, signal)
   } catch (error) {
     // A missing candidate is the expected case while walking a probe list; any
     // other failure names a provider problem, so it propagates.
-    if (error instanceof SubprocessExecutableNotFoundError) return undefined
+    if (error instanceof host.subprocess.SubprocessExecutableNotFoundError) return undefined
     throw error
   }
+}
+
+/** Everything one resolution needs. */
+export interface ResolveShellOptions {
+  /** The catalog entry being resolved. */
+  readonly entry: CatalogEntry
+  /** An explicit executable, which wins over discovery. */
+  readonly configuredPath?: string | undefined
+  /** Explicit environment for the lookup. */
+  readonly env?: Environment | undefined
+  /** Cancellation. */
+  readonly signal?: AbortSignal | undefined
+  /** The execution platform the resolution answers for. */
+  readonly platform: Platform
 }
 
 /**
@@ -67,7 +107,7 @@ async function tryResolve(ctx, candidate, env, signal) {
  * @returns the resolved path and whether it was configured or discovered.
  * @throws {Error} when the configured path is unusable or nothing is discovered.
  */
-export async function resolveShell(ctx, options) {
+export async function resolveShell(ctx: ResolverContext, options: ResolveShellOptions): Promise<ShellResolution> {
   const { entry, configuredPath, env, signal, platform } = options
   const configured = typeof configuredPath === 'string' && configuredPath.trim().length > 0
     ? configuredPath.trim()
@@ -91,7 +131,7 @@ export async function resolveShell(ctx, options) {
     return { path: resolved, source: 'configured' }
   }
 
-  const probed = []
+  const probed: string[] = []
   for (const candidate of entry.candidates(env)) {
     const resolved = await tryResolve(ctx, candidate, env, signal)
     if (resolved === undefined) {
@@ -104,7 +144,7 @@ export async function resolveShell(ctx, options) {
   }
   throw new Error(
     `dsh-shell-select: no ${entry.label} executable found in the execution environment; `
-    + `set "executable" in the shell-select settings. Probed ${probed.length} `
+    + `set "executable" in the plugin configuration. Probed ${probed.length} `
     + `location${probed.length === 1 ? '' : 's'}: ${probed.join(', ')}`,
   )
 }
@@ -115,7 +155,7 @@ export async function resolveShell(ctx, options) {
  * @param options - the same options {@link resolveShell} takes.
  * @returns the resolution, or the failure diagnostic.
  */
-export async function inspectShell(ctx, options) {
+export async function inspectShell(ctx: ResolverContext, options: ResolveShellOptions): Promise<ShellInspection> {
   try {
     const resolved = await resolveShell(ctx, options)
     return { available: true, path: resolved.path, source: resolved.source }
@@ -148,7 +188,7 @@ export async function inspectShell(ctx, options) {
  * @returns the validated path.
  * @throws {Error} when the path is missing, not a directory, or not absolute.
  */
-export function requireWorkingDirectory(workdir, platform) {
+export function requireWorkingDirectory(workdir: string | undefined, platform: Platform): string {
   if (typeof workdir !== 'string' || workdir.length === 0) {
     throw new Error('dsh-shell-select: refusing to run without a working directory')
   }
@@ -172,11 +212,42 @@ export function requireWorkingDirectory(workdir, platform) {
   return workdir
 }
 
+/** One status row per catalog entry on a platform. */
+export interface CatalogRow {
+  readonly id: string
+  readonly label: string
+  readonly dialect: CatalogEntry['dialect']
+  readonly selected: boolean
+  /** Whether the executable resolved at all. */
+  readonly available: boolean
+  /** The resolved executable, present iff {@link available}. */
+  readonly path?: string
+  /** Whether the path came from configuration or discovery. */
+  readonly source?: 'configured' | 'discovered'
+  /** The failure diagnostic, present iff not {@link available}. */
+  readonly detail?: string
+  readonly confineable: boolean
+  readonly confineReason?: string
+  readonly supportsLoginShell: boolean
+  readonly supportsDistro: boolean
+  readonly syntax: string
+}
+
+/** Everything one catalog inspection needs. */
+export interface InspectCatalogOptions {
+  /** The selected entry id, which decides which row the override applies to. */
+  readonly selectedId?: string | undefined
+  /** The override rule execution uses, so the card reports what a command would run. */
+  readonly overrideFor: (entry: CatalogEntry, selected: boolean) => string | undefined
+  /** Explicit environment for the lookups. */
+  readonly env?: Environment | undefined
+}
+
 /**
  * One status row per catalog entry on a platform.
  *
  * Each row resolves through the *same* override rule execution uses, so what the
- * card reports as the effective executable is what a command would run. An
+ * panel reports as the effective executable is what a command would run. An
  * override that names one shell is applied to that shell's row only, because
  * applying it to every row would report the same file as five different shells.
  * @param ctx - context carrying `subprocess`.
@@ -184,8 +255,12 @@ export function requireWorkingDirectory(workdir, platform) {
  * @param options - the selected entry id, the override rule, and the environment.
  * @returns the rows, in catalog order.
  */
-export async function inspectCatalog(ctx, platform, options) {
-  const rows = []
+export async function inspectCatalog(
+  ctx: ResolverContext,
+  platform: Platform,
+  options: InspectCatalogOptions,
+): Promise<CatalogRow[]> {
+  const rows: CatalogRow[] = []
   for (const entry of catalogFor(platform)) {
     const selected = entry.id === options.selectedId
     const inspection = await inspectShell(ctx, {
@@ -201,7 +276,7 @@ export async function inspectCatalog(ctx, platform, options) {
       selected,
       ...inspection,
       confineable: (entry.confineable ?? { confined: true }).confined,
-      ...(entry.confineable?.confined === false ? { confineReason: entry.confineable.reason } : {}),
+      ...entry.confineable?.confined === false ? { confineReason: entry.confineable.reason } : {},
       supportsLoginShell: entry.supportsLoginShell === true,
       supportsDistro: entry.supportsDistro === true,
       syntax: entry.syntax,

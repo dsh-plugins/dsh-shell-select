@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Shell selection",
+    "description": "Choose the shell every model command runs in — PowerShell, cmd, Git Bash, WSL, bash, zsh, fish or sh — with discovery, an explicit path override, per-shell status facts, and a fixed self-test."
+  }
+}

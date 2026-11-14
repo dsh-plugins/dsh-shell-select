@@ -8,8 +8,8 @@
  *    candidates) to hand to `ctx.subprocess.resolveExecutable`, which is the
  *    harness's own absolute-path/PATH/`PATHEXT` resolution and also the only one
  *    that works in a remote execution world. The one exception is PowerShell's
- *    well-known install locations, which are taken from the harness's own
- *    exported `candidatePwshPaths` rather than restated here.
+ *    well-known install locations, which come from the harness's own exported
+ *    `candidatePwshPaths` rather than restated here.
  * 2. **The platform is an input, not a branch.** Every function takes
  *    `'windows' | 'posix'`, so the catalog for either platform can be exercised
  *    from either platform and the shared logic stays testable. Windows path text
@@ -20,8 +20,61 @@
  * @module dsh-shell-select/catalog
  */
 
-import { candidatePwshPaths } from '@deepseek-ai/dsh-pwsh-local'
 import { win32 } from 'node:path'
+
+import { host } from './host.js'
+
+/** The execution platforms a catalog exists for. */
+export type Platform = 'windows' | 'posix'
+
+/** Argument conventions this plugin knows how to build. */
+export type Dialect = 'bash' | 'powershell' | 'cmd' | 'wsl'
+
+/** An environment as a resolver or a caller supplies it. */
+export type Environment = Readonly<Record<string, string | undefined>>
+
+/** The answer a probe is expected to produce. */
+export type ProbeKind = 'version' | 'interpreter'
+
+/** What a catalog entry measured about the sandbox on its platform. */
+export interface ConfinementClaim {
+  /** Whether the sandbox can start this shell at all. */
+  readonly confined: boolean
+  /** The measured reason, present only when {@link confined} is false. */
+  readonly reason?: string
+}
+
+/** How one entry answers the status card's "which version is this?" question. */
+export interface EntryProbe {
+  readonly kind: ProbeKind
+  readonly argv: (executable: string) => readonly string[]
+}
+
+/** One selectable shell. */
+export interface CatalogEntry {
+  /** Stable id stored in the plugin configuration. */
+  readonly id: string
+  /** Presentation label. */
+  readonly label: string
+  /** Argument convention every command for this entry is built with. */
+  readonly dialect: Dialect
+  /** Program names that mean *this* shell, used by the identity guard. */
+  readonly names: readonly string[]
+  /** Model-facing syntax note. */
+  readonly syntax: string
+  /** Candidate executables, in probe order. */
+  readonly candidates: (env: Environment | undefined) => readonly string[]
+  /** Whether `loginShell` is meaningful for this entry. */
+  readonly supportsLoginShell?: boolean
+  /** Whether the entry runs inside a WSL distribution. */
+  readonly supportsDistro?: boolean
+  /** Extra acceptance check applied to a resolved executable. */
+  readonly accept?: (candidate: string) => { ok: true } | { ok: false; detail: string }
+  /** What was measured about confinement for this entry. */
+  readonly confineable?: ConfinementClaim
+  /** A non-default version query, when the family has no version flag. */
+  readonly probe?: EntryProbe
+}
 
 /**
  * The program name in a path, for either platform's separators.
@@ -32,7 +85,7 @@ import { win32 } from 'node:path'
  * @param candidate - a path or bare command name.
  * @returns its last path segment.
  */
-export function programName(candidate) {
+export function programName(candidate: string): string {
   return candidate.split(/[\\/]/u).pop() ?? candidate
 }
 
@@ -44,23 +97,24 @@ export function programName(candidate) {
  * everywhere it is asked about.
  * @returns `'windows'` or `'posix'`.
  */
-export function localPlatform() {
+export function localPlatform(): Platform {
   return process.platform === 'win32' ? 'windows' : 'posix'
 }
 
 /** Execution-world platform words, as `ctx.subprocess.terminalEnvironment` reports them. */
-export const PLATFORMS = Object.freeze(['windows', 'posix'])
+export const PLATFORMS: readonly Platform[] = Object.freeze(['windows', 'posix'])
 
 /**
- * The settings value meaning "use this platform's default shell".
+ * The configuration value meaning "use this platform's default shell".
  *
  * It exists so the schema carries no platform-specific default: a stored
  * `shell` value that named `bash` would be wrong on Windows and a stored `cmd`
- * wrong everywhere else, and a settings document is shared across platforms.
+ * wrong everywhere else, and a configuration document is shared across
+ * platforms.
  */
 export const AUTO_SHELL = 'auto'
 
-/** Model-facing syntax note shared by every bash-family entry. */
+/** Model-facing syntax note shared by every POSIX-family entry. */
 const POSIX_SHELL_SYNTAX =
   'POSIX shell syntax. Paths are POSIX paths (/home/you/project). '
   + '`$NAME` reads environment variables; `|`, `>`, `&&` and `&` chain and redirect. '
@@ -68,12 +122,20 @@ const POSIX_SHELL_SYNTAX =
 
 /**
  * Read one environment variable as a string.
+ *
+ * An absent `env` means *this process's environment*, which is the local default
+ * and the same default the harness's own `candidatePwshPaths` takes. A caller
+ * with an explicit environment (a remote execution world, a registration-time
+ * lookup with a scrubbed PATH) supplies it and this function reads only that.
+ * Without the fallback, `gitbash` would derive no install roots at all on a host
+ * whose Git is exactly where PATH says it is.
  * @param env - environment to read.
  * @param name - variable name.
  * @returns the value, or undefined when absent or empty.
  */
-function envValue(env, name) {
-  const value = env?.[name]
+function envValue(env: Environment | undefined, name: string): string | undefined {
+  const source: Environment = env ?? process.env
+  const value = source[name]
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
@@ -88,7 +150,7 @@ function envValue(env, name) {
  * @param env - environment to read.
  * @returns the entries in PATH order.
  */
-function pathEntries(env) {
+function pathEntries(env: Environment | undefined): string[] {
   return (envValue(env, 'PATH') ?? '').split(';')
     .map(entry => entry.trim().replace(/^"|"$/gu, ''))
     .filter(entry => entry.length > 0)
@@ -103,10 +165,10 @@ function pathEntries(env) {
  * @param env - environment to read.
  * @returns candidate roots, most specific first.
  */
-function gitRootsFromPath(env) {
-  const roots = []
-  const seen = new Set()
-  const push = root => {
+function gitRootsFromPath(env: Environment | undefined): string[] {
+  const roots: string[] = []
+  const seen = new Set<string>()
+  const push = (root: string): void => {
     const key = root.toLowerCase()
     if (seen.has(key)) return
     seen.add(key)
@@ -137,8 +199,8 @@ function gitRootsFromPath(env) {
  * @param env - environment to read.
  * @returns candidate paths.
  */
-function gitBashCandidates(env) {
-  const candidates = []
+function gitBashCandidates(env: Environment | undefined): string[] {
+  const candidates: string[] = []
   for (const root of gitRootsFromPath(env)) {
     candidates.push(win32.join(root, 'bin', 'bash.exe'))
     candidates.push(win32.join(root, 'usr', 'bin', 'bash.exe'))
@@ -163,9 +225,9 @@ function gitBashCandidates(env) {
  * @param pick - which part of the list this entry owns.
  * @returns candidate paths, in Windows form.
  */
-function powershellCandidates(env, pick) {
-  const known = candidatePwshPaths(env)
-  const isWindowsPowershell = candidate => candidate.toLowerCase().includes('windowspowershell')
+function powershellCandidates(env: Environment | undefined, pick: 'current' | 'legacy'): string[] {
+  const known = host.pwshLocal.candidatePwshPaths((env ?? process.env) as NodeJS.ProcessEnv)
+  const isWindowsPowershell = (candidate: string): boolean => candidate.toLowerCase().includes('windowspowershell')
   return known
     .filter(candidate => pick === 'legacy' ? isWindowsPowershell(candidate) : !isWindowsPowershell(candidate))
     .map(candidate => win32.normalize(candidate))
@@ -188,7 +250,7 @@ function powershellCandidates(env, pick) {
  * those two entries carry a refusal reason. Everywhere else confinement wraps
  * argv and the shell binary is not a factor, so entries default to confineable.
  */
-const ENTRIES = {
+const ENTRIES: Readonly<Record<Platform, readonly CatalogEntry[]>> = {
   windows: [
     {
       id: 'pwsh',
@@ -222,7 +284,7 @@ const ENTRIES = {
         + 'IMPORTANT: `%NAME%` is NOT expanded — the command reaches cmd in one pass, so write `call ...` '
         + 'when you need cmd to expand a variable, for example `call echo %CD%`. '
         + 'Runs as `cmd /d /q /c`: AutoRun is skipped and echo is off. ',
-      candidates: env => [...new Set([envValue(env, 'ComSpec'), 'cmd.exe'].filter(value => value !== undefined))],
+      candidates: env => [...new Set([envValue(env, 'ComSpec'), 'cmd.exe'].filter((value): value is string => value !== undefined))],
       supportsLoginShell: false,
     },
     {
@@ -238,7 +300,7 @@ const ENTRIES = {
       // The GUI launcher would open a window instead of running the command.
       accept: candidate => /(^|[\\/])bash\.exe$/iu.test(candidate)
         ? { ok: true }
-        : { ok: false, detail: 'expected bash.exe, got ' + programName(candidate) },
+        : { ok: false, detail: `expected bash.exe, got ${programName(candidate)}` },
       confineable: {
         confined: false,
         reason: 'MSYS2 bash cannot start under the Windows restricted token: its runtime aborts with '
@@ -311,7 +373,7 @@ const ENTRIES = {
       label: 'POSIX sh',
       dialect: 'bash',
       names: ['sh', 'dash', 'ash'],
-      syntax: POSIX_SHELL_SYNTAX + 'This is the system `sh`, which may be dash rather than bash; avoid bash-only syntax. ',
+      syntax: `${POSIX_SHELL_SYNTAX}This is the system \`sh\`, which may be dash rather than bash; avoid bash-only syntax. `,
       candidates: () => ['sh'],
       supportsLoginShell: false,
       confineable: { confined: true },
@@ -341,7 +403,7 @@ const ENTRIES = {
  * POSIX rows are the harness's documented behavior for a wrapper-based sandbox
  * (bwrap, Landlock, Seatbelt confine any argv), not a measurement made here.
  */
-export const VERIFIED_CONFINEMENT_PLATFORMS = Object.freeze(['windows'])
+export const VERIFIED_CONFINEMENT_PLATFORMS: readonly Platform[] = Object.freeze(['windows'])
 
 /**
  * The catalog for one platform.
@@ -349,7 +411,7 @@ export const VERIFIED_CONFINEMENT_PLATFORMS = Object.freeze(['windows'])
  * @returns the entries, in presentation order.
  * @throws {Error} for an unknown platform.
  */
-export function catalogFor(platform) {
+export function catalogFor(platform: Platform): readonly CatalogEntry[] {
   const entries = ENTRIES[platform]
   if (entries === undefined) throw new Error(`dsh-shell-select: unknown platform ${JSON.stringify(platform)}`)
   return entries
@@ -358,10 +420,10 @@ export function catalogFor(platform) {
 /**
  * Look one entry up by id.
  * @param platform - `'windows'` or `'posix'`.
- * @param id - the entry id a settings document selected.
+ * @param id - the entry id a configuration document selected.
  * @returns the entry, or undefined when this platform has no such shell.
  */
-export function findEntry(platform, id) {
+export function findEntry(platform: Platform, id: string): CatalogEntry | undefined {
   return catalogFor(platform).find(entry => entry.id === id)
 }
 
@@ -374,11 +436,11 @@ export function findEntry(platform, id) {
  * @param mode - the resolved sandbox mode for the call.
  * @returns the verdict and, when refused, why.
  */
-export function checkConfinement(entry, mode) {
+export function checkConfinement(entry: CatalogEntry, mode: string): { ok: true; confined: boolean } | { ok: false; confined: false; reason: string } {
   if (mode === 'danger-full-access') return { ok: true, confined: false }
   const capability = entry.confineable ?? { confined: true }
   if (capability.confined) return { ok: true, confined: true }
-  return { ok: false, confined: false, reason: capability.reason }
+  return { ok: false, confined: false, reason: capability.reason ?? 'confinement was not verified for this shell' }
 }
 
 /**
@@ -387,7 +449,7 @@ export function checkConfinement(entry, mode) {
  * @param program - a bare program name, e.g. `bash.exe`.
  * @returns the claiming entry, or undefined when none or several claim it.
  */
-export function entryClaiming(platform, program) {
+export function entryClaiming(platform: Platform, program: string): CatalogEntry | undefined {
   const leaf = program.toLowerCase()
   const claimed = catalogFor(platform).filter(entry => entry.names.some(name => name.toLowerCase() === leaf))
   return claimed.length === 1 ? claimed[0] : undefined
@@ -414,7 +476,7 @@ export function entryClaiming(platform, program) {
  * @param platform - `'windows'` or `'posix'`, selecting the sibling entries.
  * @returns the verdict, with a diagnostic when the path is the wrong program.
  */
-export function checkIdentity(entry, resolved, platform) {
+export function checkIdentity(entry: CatalogEntry, resolved: string, platform: Platform): { ok: true } | { ok: false; detail: string } {
   const leaf = programName(resolved)
   const own = entry.names.some(name => name.toLowerCase() === leaf.toLowerCase())
   const claimed = entryClaiming(platform, leaf)
@@ -435,7 +497,11 @@ export function checkIdentity(entry, resolved, platform) {
  * @param dialectDefault - the dialect's own version query.
  * @returns the argv to spawn and the kind of answer to expect.
  */
-export function probeFor(entry, executable, dialectDefault) {
+export function probeFor(
+  entry: CatalogEntry,
+  executable: string,
+  dialectDefault: (dialect: Dialect, executable: string) => readonly string[],
+): { kind: ProbeKind; argv: readonly string[] } {
   if (entry.probe !== undefined) return { kind: entry.probe.kind, argv: entry.probe.argv(executable) }
   return { kind: 'version', argv: dialectDefault(entry.dialect, executable) }
 }

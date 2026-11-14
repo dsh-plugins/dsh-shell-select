@@ -1,118 +1,93 @@
-# dsh-shell-select
+<div align="center">
 
+<img src="icon.svg" alt="Shell selection" width="96" height="96">
+
+# Shell selection
+
+**Choose the shell every agent command runs in, and see what the machine actually resolved.**
+
+[English](README.md) · [简体中文](README.zh_CN.md)
+
+[![npm](https://img.shields.io/npm/v/@dsh-plugin/dsh-shell-select.svg)](https://www.npmjs.com/package/@dsh-plugin/dsh-shell-select)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![dsh](https://img.shields.io/badge/dsh-%3E%3D0.2.2-blue.svg)](https://github.com/deepseek-ai/deepseek-harness)
 
-Choose which shell DeepSeek Harness runs agent commands in. PowerShell, Windows
-PowerShell, `cmd.exe`, Git Bash, WSL Bash, `bash`, `zsh`, `fish`, or the system
-`sh`: you pick one, it is stored as a setting, and every agent command uses it.
+</div>
+
+PowerShell, Windows PowerShell, `cmd.exe`, Git Bash, WSL Bash, `bash`, `zsh`,
+`fish`, or the system `sh`: you pick one, it is stored as a plugin setting, and
+every agent command uses it.
 
 The selection belongs to the deployment, not to the model. Agents get a single
 `shell` tool and cannot choose a different shell for one command, and a shell the
 current permission mode cannot confine is refused rather than run outside the
 sandbox.
 
-![The Shell selection card in DSH Settings](docs/images/shell-selection-card.png)
-
 ## Features
 
-- **One shell for every agent command.** The selector becomes `ctx.shell`, so the
-  `shell` tool, hook commands, and the harness's own probes all run through it.
-  The shipped `bash` and `pwsh` tools are denied with a reason naming `shell`.
-- **Discovery, with an explicit override when you want one.** Shells are found by
-  name through the harness's own executable resolution. Set `executable` when a
-  shell lives somewhere unusual, or when two installs of it exist.
-- **Persistent and editable in the Web UI.** The choice lives in your DSH
-  settings document under `shell-select` and is managed from a
-  **Settings → Plugins → Shell selection** card with Save, Discard, and a Test
-  action.
-- **The model is told what the selected shell needs.** Each shell carries its own
-  syntax notes (PowerShell paths, `cmd` variable expansion, WSL's `/mnt/...`
-  paths, fish's non-POSIX syntax), so the agent writes commands that fit.
-- **Runs inside the harness's existing sandbox.** Deadlines, output limits,
-  background jobs, and confinement come from the harness unchanged; this plugin
-  adds no execution machinery of its own.
+| Capability | What it does |
+|---|---|
+| One shell per deployment | The selector becomes `ctx.shell`, so the `shell` tool, hook commands, and the harness's own probes all run through it. The shipped `bash` and `pwsh` tools are denied with a reason naming `shell`. |
+| Discovery, with an override | Shells are found by name through the harness's own executable resolution. Set `executable` when a shell lives somewhere unusual, or when two installs exist. A path that cannot be resolved, or that names a different shell, is an error — never a cue to search anyway. |
+| Fail-closed sandbox | When the selected shell cannot be confined under the session's permission mode, the call is refused **before any process exists**. No silent fallback, no silent drop of the sandbox. |
+| Facts, not claims | The panel reports three separate things: whether the executable resolves, what the catalog expects the sandbox to be able to do with it, and what this machine was observed doing. |
+| A fixed self-test | One button runs one fixed command through the saved selection, under the same confinement a model call gets, in the deployment's workspace root. |
+| The model is told what the shell needs | Each shell carries its own syntax notes (PowerShell paths, `cmd` variable expansion, WSL's `/mnt/...` paths, fish's non-POSIX syntax), re-read on every model step. |
+| No execution machinery of its own | Deadlines, output limits, background jobs, and confinement come from the harness unchanged. |
 
 ## Quick start
 
-Install into a dsh profile, which is a pnpm project under `~/.dsh/profiles/<name>`:
-
 ```sh
-dsh plugin --profile web add dsh-shell-select
+dsh plugin --profile web add "@dsh-plugin/dsh-shell-select"
+dsh web
 ```
 
-The command forwards its arguments to pnpm in the profile directory and then
-registers the package as a bundle layer in `dsh.profile.bundles` for you. Existing
-entries in that list are left alone, so there is nothing to edit by hand. A
-running profile keeps the bundle set it started with, so restart it:
+Then open **Settings → Plugins → Shell selection**:
 
-```sh
-dsh web          # the same as dsh --profile web
-```
+1. Pick a shell. **Automatic** (the default) resolves from the platform and the
+   `executable` override; the **Shell facts** panel says which shell that is.
+2. Press **Save**.
+3. Press **Test shell** in the *Test the selection* panel to run one fixed
+   command through the saved selection.
 
-Then, in the app:
-
-1. Open **Settings → Plugins** and expand **Shell selection**.
-2. Choose a shell from the dropdown. Automatic, the default, picks a shell for
-   you and says which one it resolved to.
-3. Press **Save**. Until you do, the edit is staged and nothing runs differently.
-4. Press **Test shell** to run one fixed command through the selection.
-
-**Test shell runs the saved selection, not the edits staged in the card.** If it
-reports a refusal, that refusal is what a command would get right now.
+**The self-test runs the saved selection, not the edits staged in the form.** If
+it reports a refusal, that refusal is what a command would get right now.
 
 ### Installing from a checkout
 
 ```sh
-git clone https://github.com/athif23/dsh-shell-select
+git clone https://github.com/dsh-plugins/dsh-shell-select
+cd dsh-shell-select && npm install && npm run build
 dsh plugin --profile web add link:/absolute/path/to/dsh-shell-select
 ```
 
 A `link:` install keeps the checkout live, so editing the plugin and restarting
 the profile is enough to see a change. The plugin installs into a profile that
-already provides the harness, because it declares the harness packages as peer
-dependencies rather than carrying a second copy of them.
+already provides the harness, because it resolves the harness packages from the
+running installation instead of carrying a second copy of them.
 
 ## Supported shells and compatibility
 
-| Platform | Catalog entries | Executed through the plugin | Confinement verified |
-|---|---|---|---|
-| Windows (primary) | `pwsh`, `powershell`, `cmd`, `gitbash`, `wsl` | PowerShell 5.1, `cmd.exe`, Git Bash, WSL Bash | `cmd.exe` and PowerShell 5.1, yes. Git Bash and WSL Bash, no |
-| Linux (secondary) | `bash`, `zsh`, `fish`, `sh`, `pwsh` | `bash`, `sh`, and `pwsh` on the CI runner; `bash`, `zsh`, and `sh` by an independent review | yes, for `bash` on the CI runner |
-| macOS (unverified) | `bash`, `zsh`, `fish`, `sh`, `pwsh` | none | no |
+| Platform | Catalog entries | Confinement verified here |
+|---|---|---|
+| Windows (primary) | `pwsh`, `powershell 5.1`, `cmd`, `gitbash`, `wsl` | `cmd.exe` and PowerShell 5.1, yes |
+| Linux | `bash`, `zsh`, `fish`, `sh`, `pwsh` | the POSIX rows follow the harness's documented wrapper behavior, not a measurement taken by this plugin |
+| macOS | `bash`, `zsh`, `fish`, `sh`, `pwsh` | not exercised |
 
-"Catalog entries" means the plugin can select the shell and build its arguments.
-"Executed through the plugin" means someone ran agent commands with it. The last
-column is stricter than both: it means a write outside the workspace was actually
-denied, which the suite asserts wherever the runner's profile promises it.
+**On Windows, Git Bash and WSL Bash cannot start under the restricted token the
+sandbox uses**, so they are refused under `workspace-write` and `read-only`,
+including for the panel's version probe; they run only under
+`danger-full-access`. That refusal is deliberate: the alternative would be running
+a shell the sandbox cannot confine.
 
-**Windows is the primary platform.** There, Git Bash and WSL Bash cannot start
-under the restricted token the sandbox uses, so they are refused under
-`workspace-write` and `read-only`, including for the card's version probe; they
-run only under `danger-full-access`. That refusal is deliberate, since the
-alternative would be running a shell the sandbox cannot confine. `pwsh`
-(PowerShell 7) is supported and was skipped on the test host only because it is
-not installed there.
-
-**Linux is secondary.** The CI runner executes `bash`, `sh`, and `pwsh` through
-the plugin and asserts the workspace-write denial, which holds there. An
-independent review ran the suites on a Linux host with no usable sandbox backend,
-so on that machine the refusal path was what got exercised. `zsh` and `fish` were
-installed on neither. **macOS is unverified.** The test workflow runs on Windows
-and Linux only; check its latest run rather than trusting a claim here.
-
-Measurements, exceptions, and what remains untested are in
-[testing.md](docs/testing.md). The routing rules and execution detail are in
-[architecture.md](docs/architecture.md).
+`engines.dsh` is `>=0.2.2-0`: the plugin needs the 0.2.2 shell seam
+(`resolve`/`execute`) and the config-api settings page. Check
+[testing.md](docs/testing.md) for what has actually been exercised.
 
 ## Configuration
 
-Settings live in `~/.dsh/settings.yaml` under the `shell-select` namespace:
-
-```yaml
-shell-select:
-  shell: gitbash
-  loginShell: false
-```
+The plugin's settings live in `<profile>/config/dsh-shell-select/config.json`,
+written by dsh-loader and edited from the plugin page.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -122,23 +97,31 @@ shell-select:
 | `wslDistro` | empty | WSL distribution name; empty uses the distribution's default. |
 | `wslMountRoot` | `/mnt` | Where the distribution mounts Windows drives. |
 | `enableRunInBackground` | `true` | Offer `run_in_background` on the `shell` tool. |
-
-The remaining fields are the inherited local executor's budgets, carried through
-so one composition row configures the whole executor: `cwd`, `timeoutMs`
-(120000), `maxTimeoutMs` (600000), `maxOutputBytes` (64000), `maxSpillBytes`
-(67108864), and `graceMs` (3000). `pwshPath` is the harness's own PowerShell path
-setting, still honored for the PowerShell entries so an existing value keeps
-working.
+| `timeoutMs` | `120000` | Default foreground timeout. |
+| `maxTimeoutMs` | `600000` | Upper bound for a per-call timeout override. |
+| `maxOutputBytes` | `64000` | Per-stream in-memory output cap. |
+| `maxSpillBytes` | `67108864` | Per-stream spill-file cap. |
+| `graceMs` | `3000` | SIGTERM→SIGKILL grace period. |
 
 **Automatic** is the default because it reproduces what the deployment already
-does: the first catalog entry that resolves, which on Windows is PowerShell
-(what the harness's own executor runs) and on Linux follows a `$SHELL` that names
-a catalog entry. An explicit `executable` override changes the answer, because an
-override naming a shell claims that shell: setting `executable` to a
-`bash.exe` path while `shell` is `auto` runs that bash, with bash's arguments.
+does: the first catalog entry that resolves, which on Windows is PowerShell (what
+the harness's own executor runs) and on Linux follows a `$SHELL` that names a
+catalog entry. An explicit `executable` override changes the answer, because an
+override naming a shell claims that shell: setting `executable` to a `bash.exe`
+path while `shell` is `auto` runs that bash, with bash's arguments.
 
-A settings change applies to subsequent calls. It never alters a call that is
+A setting change applies to subsequent calls. It never alters a call that is
 already being prepared, a running process, or the facts a finished call recorded.
+
+## Upgrading from `dsh-shell-select` 0.1.x
+
+The package was renamed to `@dsh-plugin/dsh-shell-select`, rewritten in
+TypeScript, and retargeted at dsh ≥ 0.2.2. **Settings do not migrate
+automatically**: dsh 0.2.2 removed the per-namespace settings contract the old
+version used, so the selection is re-entered once in the new form. Everything
+else — the single `shell` tool, the `bash`/`pwsh` denial, the `auto` rules, every
+dialect — keeps its semantics. The full list of breaking changes is in
+[migration.md](docs/migration.md).
 
 ## Troubleshooting and limitations
 
@@ -149,19 +132,23 @@ every location that was probed.
 **Refused under the current permission mode.** The selected shell cannot be
 confined by the sandbox the session resolved. On Windows this is expected for Git
 Bash and WSL Bash under `workspace-write` and `read-only`. The refusal names the
-shell and the mode; pick a shell the mode can confine.
+shell and the mode; pick a shell the mode can confine, or switch the session to
+`danger-full-access` deliberately.
 
-**Automatic shows *unknown*.** You have staged an `executable` path that the host
-has not resolved yet. Automatic is resolved from the saved selection, so save the
-path and the card will name the shell it picks.
+**Automatic shows *unknown*.** The host has not resolved the `executable`
+override yet, or the override names nothing installed. Automatic is resolved for
+its own configurations, which is a different question from what the saved
+selection runs.
 
-**Test shell reports a refusal or the wrong shell.** Test runs the *saved*
-selection. If you have staged edits, save them first, or discard them.
+**The plugin does not load, and the message names anchors.** `src/host.ts` could
+not find a harness ≥ 0.2.2 to bind to. The message lists every anchor that was
+tried; set `DSH_SHELL_SELECT_HOST_ANCHOR` to the absolute path of the running
+`dsh` entry (usually `<dsh>/lib/bin.js`) to point it at the right one.
 
 **`cmd` quirks.** The command reaches `cmd.exe` in one pass, so a `%NAME%` in your
 command stays literal; write `call echo %CD%` when you need expansion. Non-ASCII
-output depends on the console code page, so it can arrive as replacement
-characters. Unicode paths and filenames are unaffected.
+output depends on the console code page. Unicode paths and filenames are
+unaffected.
 
 **Routes the selector does not control.** Agent commands go through the selected
 shell, but `run_code` program bodies, PTY-based terminal tools, and out-of-process
@@ -170,15 +157,16 @@ subagents spawn their own processes. The full list, with reasons, is in
 
 Shell selection is not destructive-command protection. The sandbox restricts
 write-class access according to the session's permission mode; this plugin adds
-no destructive-command detection and is not a safety layer. The other known
-limitations are listed in [testing.md](docs/testing.md#known-limitations).
+no destructive-command detection and is not a safety layer.
 
 ## Development
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm test              # every suite
-pnpm test:execution    # only the suites that spawn real processes
+npm ci
+npm run typecheck
+npm run build
+npm test
+npm pack --dry-run
 ```
 
 Tests create their fixtures under `<projectRoot>/.test-tmp/<unique-id>/`. They
@@ -186,22 +174,19 @@ refuse a root inside the real user profile, so a checkout that lives inside the
 profile (a clone in `$HOME`, a CI runner) must name an approved root outside it:
 
 ```sh
-# Linux, macOS, or Git Bash
-DSH_SHELL_SELECT_TEST_TMP=/var/tmp/dsh-shell-select pnpm test
+# Linux, macOS, or Git Bash — /var/tmp, never /tmp: the POSIX profile grants /tmp
+DSH_SHELL_SELECT_TEST_TMP=/var/tmp/dsh-shell-select npm test
 ```
 
 ```powershell
 # Windows: name a path outside the profile, since %TEMP% is inside it
 $env:DSH_SHELL_SELECT_TEST_TMP = 'D:\dsh-shell-select-test-tmp'
-pnpm test
+npm test
 ```
 
-pnpm is the supported installer, pinned by `packageManager`; npm cannot express
-the harness workspace's `link:` graph. See
-[architecture.md](docs/architecture.md#installation-and-composition) for why the
-harness packages are peers, and
-[testing.md](docs/testing.md#running-the-suites) for what each suite covers and
-which platforms have been exercised.
+See [architecture.md](docs/architecture.md) for how a call is decided and why the
+harness packages are resolved at runtime rather than declared as dependencies, and
+[testing.md](docs/testing.md) for what each suite covers.
 
 ## License
 

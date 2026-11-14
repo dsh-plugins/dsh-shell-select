@@ -1,7 +1,9 @@
 node_modules/
+lib/
 
 # Disposable test fixtures. Every suite creates its own unique directory here
-# and removes it afterwards; helpers.mjs refuses to delete anything outside it.
+# and removes it afterwards; tests/helpers.mjs refuses to delete anything
+# outside it.
 .test-tmp/
 
 # Local dsh profile scratch, when one is pointed at this directory
