@@ -1,6 +1,6 @@
 {
   "name": "@dsh-plugin/dsh-shell-select",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "DeepSeek Harness plugin: one model-facing `shell` tool whose shell is a user setting. Resolves and validates through the harness's own seams, and refuses to run when the selected shell cannot be confined.",
   "type": "module",
   "main": "lib/index.js",
