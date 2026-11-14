@@ -16,7 +16,7 @@
  * @module dsh-shell-select/config-template
  */
 
-import { defineConfig, type ConfigField, type ConfigTemplate } from '@dsh-plugin/dsh-loader/config'
+import type { ConfigField, ConfigTemplate } from '@dsh-plugin/dsh-loader/config'
 
 import { AUTO_SHELL, catalogFor } from './catalog.js'
 import {
@@ -25,6 +25,9 @@ import {
   PLUGIN_NAME,
   SELECTABLE_SHELL_IDS,
 } from './config.js'
+
+// Preserve extension fields while checking the base template contract.
+const template = <T extends ConfigTemplate>(value: T): T => value
 
 /** Panel id owning the read-only shell facts. */
 export const STATUS_PANEL_ID = 'status'
@@ -168,7 +171,9 @@ export function configFields(): ConfigField[] {
  * @returns the template dsh-loader registers.
  */
 export function createConfigTemplate(): ConfigTemplate {
-  return defineConfig({
+  // ConfigStore.register validates this template when loader becomes available.
+  // A type-only dependency lets the shell provider boot without loader installed.
+  return template({
     id: PLUGIN_ID,
     packageName: PLUGIN_NAME,
     title: 'Shell selection',

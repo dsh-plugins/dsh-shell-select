@@ -10,7 +10,11 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { apply, awaitSelection } from '../lib/index.js'
+import plugin, { apply, awaitSelection } from '../lib/index.js'
+import { executorConfig } from '../lib/executor.js'
+import { resolvePluginConfig } from '../lib/config.js'
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { makeContext, stubSubprocess } from './helpers.mjs'
 
 /** Collect the messages a probe reports instead of logging them. */
@@ -47,9 +51,73 @@ describe('selection probe deadlines', () => {
     assert.equal(messages.length, 1)
     assert.match(messages[0], /seam refused/u)
   })
+
+  it('cancels an outstanding observer on owner disposal without warning', async () => {
+    const { messages, warn } = collector()
+    const controller = new AbortController()
+    const pending = awaitSelection(new Promise(() => {}), 'mount', warn, 25, controller.signal)
+    controller.abort()
+    await pending
+    await tick(40)
+    assert.deepEqual(messages, [])
+  })
 })
 
 describe('plugin activation', () => {
+  it('provides shell before loader and agent services exist, even when loader needs shell', async () => {
+    const ctx = await makeContext()
+    let settingsMounted = false
+    const handle = {
+      get: () => ({ value: { shell: 'bash' }, revision: 0 }),
+      watch: () => () => {}, registerOperation: () => () => {},
+    }
+    await ctx.plugin({
+      name: 'loader-that-waits-for-shell', inject: ['shell'],
+      apply(scope) {
+        scope.provide('dshLoader', {
+          dshVersion: '0.2.2', config: { register: async () => { settingsMounted = true; return handle } },
+        })
+      },
+    })
+    await ctx.plugin(plugin)
+    await tick()
+    assert.ok(ctx.get('shell'), 'shell must not wait for loader/tools/systemPrompt/shellEnv')
+    assert.equal(settingsMounted, true, 'the dependent loader must start after shell is provided')
+    await ctx.fiber.dispose()
+  })
+
+  it('does not wait for settings I/O to provide shell or finish activation', async () => {
+    const ctx = await makeContext()
+    await ctx.plugin({ apply(scope) {
+      scope.provide('dshLoader', { config: { register: () => new Promise(() => {}) } })
+    } })
+    await Promise.race([
+      ctx.plugin(plugin),
+      tick(500).then(() => { throw new Error('activation waited for settings') }),
+    ])
+    assert.ok(ctx.get('shell'))
+    await ctx.fiber.dispose()
+  })
+
+  it('never scans local PATH in the Windows parent constructor', { skip: process.platform !== 'win32' }, async () => {
+    const ctx = await makeContext()
+    const original = fs.lstatSync
+    let scans = 0
+    fs.lstatSync = () => { scans += 1; throw new Error('PATH is unavailable') }
+    syncBuiltinESMExports()
+    try {
+      const { ShellSelectExecutor } = await import('../lib/executor.js')
+      const settings = resolvePluginConfig()
+      const executor = new ShellSelectExecutor(ctx, executorConfig(settings), () => settings)
+      await executor.ready
+      assert.equal(scans, 0)
+    } finally {
+      fs.lstatSync = original
+      syncBuiltinESMExports()
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('does not wait for a selection probe that is still running', async () => {
     let release
     const gate = new Promise(resolve => { release = resolve })

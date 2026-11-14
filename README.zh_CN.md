@@ -188,3 +188,5 @@ npm test
 ## 许可证
 
 [MIT](LICENSE)，版权所有 2026 Muhammad Athif Humam。
+
+启动时先提供 shell 服务，设置加载与工具注册分别在依赖可用后完成；设置 I/O 和探测不会加入 Cordis 启动等待链。Windows 父类不再扫描本机 PATH，真正执行命令时仍通过宿主 subprocess 解析并验证所选 shell。

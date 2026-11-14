@@ -37,7 +37,6 @@ import {
   createConfigTemplate,
 } from './config-template.js'
 import { ShellSelectExecutor, executorConfig } from './executor.js'
-import { host } from './host.js'
 import { buildStatus, formatShellTest, formatStatus, runShellTest } from './status.js'
 import { registerShellTool, registerShellToolReplacement } from './tool.js'
 
@@ -77,7 +76,7 @@ export const name = PLUGIN_NAME
  * it did not inject — an omitted name would surface as a runtime error on the
  * first call instead of as a missing dependency at load.
  */
-export const inject = ['dshLoader', 'tools', 'systemPrompt', 'shellEnv', 'subprocess', 'sandbox', 'sandboxPolicy']
+export const inject = ['subprocess', 'sandbox', 'sandboxPolicy']
 
 /**
  * How long activation waits for the first selection probe before it gives up.
@@ -101,6 +100,7 @@ export const SELECTION_DEADLINE_MS = 5_000
  * @param label - the activation step named in the diagnostic.
  * @param warn - sink for a timeout or failure; `apply` passes its logger.
  * @param deadlineMs - the longest wait, in milliseconds.
+ * @param signal - owner disposal; a disposed owner must not log or retain timers.
  * @returns nothing; a timeout or rejection is reported through `warn`.
  */
 export async function awaitSelection(
@@ -108,9 +108,12 @@ export async function awaitSelection(
   label: string,
   warn: (message: string) => void,
   deadlineMs: number = SELECTION_DEADLINE_MS,
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) return
   const budget = Math.max(1, Math.trunc(deadlineMs))
   let timer: ReturnType<typeof setTimeout> | undefined
+  let cancelled: (() => void) | undefined
   try {
     await Promise.race([
       probe,
@@ -118,27 +121,34 @@ export async function awaitSelection(
         timer = setTimeout(() => {
           reject(new Error(`the ${label} selection probe did not settle within ${String(budget)} ms`))
         }, budget)
+        if (signal) timer.unref()
       }),
+      ...(signal ? [new Promise<void>(resolve => {
+        cancelled = () => resolve()
+        signal.addEventListener('abort', cancelled, { once: true })
+      })] : []),
     ])
   } catch (error) {
+    if (signal?.aborted) return
     const detail = error instanceof Error ? error.message : String(error)
     warn(`dsh-select: ${detail}; the tool keeps the pending selection and resolves a shell on demand`)
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    if (cancelled) signal?.removeEventListener('abort', cancelled)
   }
 }
 
 /** The subset of the dsh-loader host API this plugin uses. */
-type DshLoaderApi = Pick<HostAPI, 'config' | 'dshVersion'>
+type DshLoaderApi = Pick<HostAPI, 'config'>
 
 /**
  * Mount the executor, the tool, and the settings form.
  * @param ctx - plugin context.
  * @param config - the composition entry, when a patch supplies one.
  */
-export async function apply(ctx: Context, config: PluginConfig | undefined): Promise<void> {
-  const loader = (ctx as Context & { dshLoader: DshLoaderApi }).dshLoader
-  ctx.logger?.info?.(`dsh-select: applying against dsh ${String(loader.dshVersion)} (host ${host.dshVersion})`)
+export function apply(ctx: Context, config: PluginConfig | undefined): void {
+  const lifetime = new AbortController()
+  ctx.effect(() => () => lifetime.abort(), 'dsh-shell-select: background probes')
 
   // The executor must exist before anything reads `ctx.shell`; its own budgets
   // come from the resolved entry, and the live configuration replaces them once
@@ -149,13 +159,15 @@ export async function apply(ctx: Context, config: PluginConfig | undefined): Pro
   // published a provisional selection synchronously, the tool reports it as
   // `pending`, and every call resolves its own shell — so the wait is optional,
   // and an optional wait must not hold the host's boot (see `awaitSelection`).
-  void awaitSelection(executor.ready, 'mount', message => { ctx.logger?.warn?.(message) })
+  void awaitSelection(executor.ready, 'mount', message => { ctx.logger?.warn?.(message) }, SELECTION_DEADLINE_MS, lifetime.signal)
 
   ctx.effect(() => () => { /* the executor is owned by this context */ }, 'dsh-shell-select: executor')
 
   // Registered on the plugin's own (deployment-plane) context so the denial
   // covers every agent scope, including the shell tools a preset re-mounts.
-  ctx.effect(() => registerShellToolReplacement(ctx), 'dsh-shell-select: replace bash/pwsh')
+  ctx.inject(['tools'], scope => {
+    scope.effect(() => registerShellToolReplacement(scope), 'dsh-shell-select: replace bash/pwsh')
+  })
 
   ctx.inject(['shell', 'tools', 'systemPrompt', 'shellEnv', 'sandboxPolicy'], scope => {
     registerShellTool(scope, {
@@ -164,45 +176,57 @@ export async function apply(ctx: Context, config: PluginConfig | undefined): Pro
     })
   })
 
-  const handle = await loader.config.register<PluginConfig>(
-    { effect: fn => ctx.effect(() => fn() ?? (() => {})) },
-    createConfigTemplate(),
-  )
-  const applySnapshot = (): void => {
-    // The new configuration is in force synchronously; only the cached
-    // description trails, so a save never makes a page wait on the seam.
-    current = resolvePluginConfig(handle.get().value)
-    void awaitSelection(executor.bindSettings(() => current), 'configuration change', message => {
-      ctx.logger?.warn?.(message)
+  ctx.inject(['dshLoader'], scope => {
+    let disposed = false
+    scope.effect(() => () => { disposed = true })
+    // Cordis also waits for injected child fibers at boot. Keep settings I/O
+    // out of their apply promises, not just out of the parent apply promise.
+    void (async () => {
+      const loader = (scope as Context & { dshLoader: DshLoaderApi }).dshLoader
+      const handle = await loader.config.register<PluginConfig>(
+        { effect: fn => scope.effect(() => fn() ?? (() => {})) },
+        createConfigTemplate(),
+      )
+      if (disposed) return
+      const applySnapshot = (): void => {
+        // The new configuration is in force synchronously; only the cached
+        // description trails, so a save never makes a page wait on the seam.
+        current = resolvePluginConfig(handle.get().value)
+        void awaitSelection(executor.bindSettings(() => current), 'configuration change', message => {
+          if (!disposed) scope.logger?.warn?.(message)
+        }, SELECTION_DEADLINE_MS, lifetime.signal)
+      }
+      applySnapshot()
+      scope.effect(() => handle.watch(applySnapshot), 'dsh-shell-select: configuration changes')
+
+      /**
+       * The panel's operation context carries the committed configuration, so the
+       * facts describe what a command would run right now rather than what the form
+       * is staging.
+       */
+      const policy = (): { mode: string; workspaceRoot: string } => scope.sandboxPolicy.resolve()
+
+      handle.registerOperation(STATUS_OPERATION_ID, async () => ({
+        value: { report: formatStatus(await buildStatus(executor, policy())) },
+      }))
+      handle.registerOperation(TEST_OPERATION_ID, async () => {
+        // The self-test re-reads the facts as part of its own result: an operation
+        // may only refresh read operations in its own panel, and a user who just ran
+        // a test wants to see the state it ran against.
+        const tested = await runShellTest(executor, policy())
+        return {
+          value: {
+            report: formatShellTest(tested),
+            status: formatStatus(await buildStatus(executor, policy())),
+          },
+        }
+      })
+
+      scope.logger?.info?.(`dsh-select: mounted settings form ${PLUGIN_ID} (${STATUS_PANEL_ID}/${TEST_PANEL_ID} panels)`)
+    })().catch(error => {
+      if (!disposed) scope.logger?.warn?.(`dsh-select: settings unavailable: ${String(error)}`)
     })
-  }
-  applySnapshot()
-  ctx.effect(() => handle.watch(applySnapshot), 'dsh-shell-select: configuration changes')
-
-  /**
-   * The panel's operation context carries the committed configuration, so the
-   * facts describe what a command would run right now rather than what the form
-   * is staging.
-   */
-  const policy = (): { mode: string; workspaceRoot: string } => ctx.sandboxPolicy.resolve()
-
-  handle.registerOperation(STATUS_OPERATION_ID, async () => ({
-    value: { report: formatStatus(await buildStatus(executor, policy())) },
-  }))
-  handle.registerOperation(TEST_OPERATION_ID, async () => {
-    // The self-test re-reads the facts as part of its own result: an operation
-    // may only refresh read operations in its own panel, and a user who just ran
-    // a test wants to see the state it ran against.
-    const tested = await runShellTest(executor, policy())
-    return {
-      value: {
-        report: formatShellTest(tested),
-        status: formatStatus(await buildStatus(executor, policy())),
-      },
-    }
   })
-
-  ctx.logger?.info?.(`dsh-select: mounted settings form ${PLUGIN_ID} (${STATUS_PANEL_ID}/${TEST_PANEL_ID} panels)`)
 }
 
 export default { name, inject, apply }

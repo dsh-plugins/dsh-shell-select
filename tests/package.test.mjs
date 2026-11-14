@@ -13,6 +13,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 
@@ -63,6 +64,37 @@ describe('the bundle declaration', () => {
 })
 
 describe('entry points', () => {
+  it('activates the reminder through real Cordis when loader cannot be resolved', () => {
+    execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { registerHooks } from 'node:module';
+      import { Context } from '@deepseek-ai/cordis';
+      registerHooks({ resolve(specifier, context, next) {
+        if (specifier.startsWith('@dsh-plugin/dsh-loader')) {
+          throw Object.assign(new Error('loader not installed'), { code: 'MODULE_NOT_FOUND' });
+        }
+        return next(specifier, context);
+      } });
+      const warnings = [];
+      console.warn = message => warnings.push(message);
+      const ctx = new Context();
+      await ctx.plugin(await import('./loader-check.mjs'));
+      assert.match(warnings.join(' '), /@dsh-plugin\\/dsh-loader@latest.*@dsh-plugin\\/dsh-loader@next/);
+      await ctx.fiber.dispose();
+    `], { cwd: root, stdio: 'pipe' })
+  })
+
+  it('loads the shell provider with all loader runtime imports unavailable', () => {
+    execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import { registerHooks } from 'node:module';
+      registerHooks({ resolve(specifier, context, next) {
+        if (specifier.startsWith('@dsh-plugin/dsh-loader')) throw new Error('loader not installed');
+        return next(specifier, context);
+      } });
+      await import('./lib/index.js');
+    `], { cwd: root, stdio: 'pipe' })
+  })
+
   it('exposes the built host entry and its types', () => {
     assert.equal(pkg.main, 'lib/index.js')
     assert.equal(pkg.types, 'lib/index.d.ts')

@@ -39,5 +39,7 @@
   disabled: true
 
 - insert:
+    - id: dsh-shell-select-loader-check
+      name: '@dsh-plugin/dsh-shell-select/loader-check'
     - id: shell-select
       name: '@dsh-plugin/dsh-shell-select'

@@ -174,10 +174,10 @@ function budget(value: number): { get: () => number } {
 export function executorConfig(values: ResolvedPluginConfig): Record<string, unknown> {
   return {
     cwd: { get: () => undefined },
-    // The Windows base class resolves `pwshPath` in its constructor; this plugin
-    // owns shell selection itself, so it hands the inherited class "no explicit
-    // pwsh", which is what makes it fall back to discovery.
-    pwshPath: { get: () => undefined },
+    // Skip the Windows parent's synchronous PATH/filesystem scan. Our argv()
+    // resolves the selected executable through subprocess before every spawn;
+    // this placeholder is never used to execute a command.
+    pwshPath: { get: () => 'pwsh' },
     timeoutMs: budget(values.timeoutMs),
     maxTimeoutMs: budget(values.maxTimeoutMs),
     maxOutputBytes: budget(values.maxOutputBytes),

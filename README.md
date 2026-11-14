@@ -220,3 +220,5 @@ is what a profile installs:
 ## License
 
 [MIT](LICENSE), copyright 2026 Muhammad Athif Humam.
+
+Startup provides the shell service before loader/settings and tool registration. Settings I/O and selection probes do not join the Cordis boot wait chain. The Windows parent no longer scans local PATH; each command still resolves and validates the selected executable through the host subprocess service.
