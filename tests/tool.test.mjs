@@ -184,6 +184,52 @@ describe('running through the tool', () => {
     assert.equal(value.stdout.text, 'hi\n')
   })
 
+  it('ignores a narrower target and its reason, keeping the standing mode', async () => {
+    const { ctx, executor, registrations, sandbox } = await mountPlugin({
+      platform: 'posix',
+      mode: 'danger-full-access',
+    })
+    registerShellTool(ctx, { executor, backgroundEnabled: () => true })
+    const execute = registrations.tools[0].execute
+    const args = {
+      command: 'echo hi',
+      description: 'Echo a greeting',
+      workdir: workdirFor('posix', workdir),
+      sandbox_permissions: 'workspace-write',
+    }
+    const call = { callId: 'narrower', rootCallId: 'narrower', signal: new AbortController().signal, agent: undefined }
+    for (const reason of [undefined, '', '  ', 'The command writes a workspace file.']) {
+      const value = await execute({ ...args, ...(reason === undefined ? {} : { justification: reason }) }, call)
+      assert.equal(value.sandbox.mode, 'danger-full-access')
+    }
+    assert.equal(sandbox.calls.length, 0)
+  })
+
+  it('keeps validation for equal, unsupported, and genuinely wider targets', async () => {
+    const { ctx, executor, registrations, subprocess } = await mountPlugin({
+      platform: 'posix',
+      mode: 'danger-full-access',
+    })
+    const session = { header: { cwd: workdirFor('posix', workdir) } }
+    const resolve = ctx.sandboxPolicy.resolve.bind(ctx.sandboxPolicy)
+    ctx.sandboxPolicy.resolve = request => resolve(request?.session === session ? { mode: 'read-only' } : request)
+    registerShellTool(ctx, { executor, backgroundEnabled: () => true })
+    const execute = registrations.tools[0].execute
+    const args = { command: 'echo hi', description: 'Echo a greeting' }
+    const call = { callId: 'mode-check', rootCallId: 'mode-check', signal: new AbortController().signal, agent: undefined }
+    const reason = 'The command writes a workspace file.'
+    await assert.rejects(execute({ ...args, sandbox_permissions: 'danger-full-access', justification: '' }, call), /invalid justification/u)
+    await assert.rejects(execute({ ...args, sandbox_permissions: 'unsupported', justification: reason }, call), {
+      code: 'INVALID_ARGS',
+    })
+    const widerCall = { ...call, agent: { session } }
+    await assert.rejects(execute({ ...args, sandbox_permissions: 'workspace-write' }, widerCall), /requires a justification/u)
+    await assert.rejects(execute({ ...args, sandbox_permissions: 'workspace-write', justification: reason }, widerCall), {
+      code: 'SANDBOX_ESCALATION_UNAVAILABLE',
+    })
+    assert.equal(subprocess.spawns.length, 0)
+  })
+
   it('registers a background job and returns its id', async () => {
     const { ctx, executor, registrations } = await mountPlugin({ platform: 'posix' })
     registerShellTool(ctx, { executor, backgroundEnabled: () => true })

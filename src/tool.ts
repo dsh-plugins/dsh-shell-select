@@ -361,11 +361,11 @@ export function registerShellTool(ctx: Context, options: ShellToolOptions): void
         sandbox_permissions: {
           type: 'string' as const,
           enum: [...escalationModes],
-          description: 'The wider sandbox mode this command needs. Only valid as a one-shot retry of a command the sandbox just denied; requires justification and user approval.',
+          description: 'The wider sandbox mode for a one-shot retry of the exact command the sandbox just denied; widening requires user approval. A narrower mode is ignored, and the command uses the current mode.',
         },
         justification: {
           type: 'string' as const,
-          description: 'Required with sandbox_permissions: one sentence for the user explaining why this exact command needs the wider access.',
+          description: 'Required with sandbox_permissions unless the requested mode is narrower than the current mode. Give one sentence explaining why this command needs wider access.',
         },
       } : {},
     },
@@ -441,10 +441,17 @@ export function registerShellTool(ctx: Context, options: ShellToolOptions): void
       }],
     },
     async execute(args, exec: ToolRunContext) {
-      validateShellArgs(args.command, args.description, args.timeoutMs, args.sandbox_permissions, args.justification)
       const standingPolicy = resolveSandboxPolicy(exec)
-      const approvedMode = args.sandbox_permissions !== undefined && args.justification !== undefined
-        ? await approveShellEscalation(args.sandbox_permissions, args.justification, exec, standingPolicy)
+      const effectiveMode = standingPolicy?.mode
+      const requestedMode = args.sandbox_permissions
+      const ignoreEscalation = effectiveMode !== undefined && requestedMode !== undefined
+        && escalationModes.some(mode => mode === requestedMode)
+        && (host.sandbox.WIDER_MODES[requestedMode] ?? []).includes(effectiveMode)
+      const sandboxPermissions = ignoreEscalation ? undefined : requestedMode
+      const justification = ignoreEscalation ? undefined : args.justification
+      validateShellArgs(args.command, args.description, args.timeoutMs, sandboxPermissions, justification)
+      const approvedMode = sandboxPermissions !== undefined && justification !== undefined
+        ? await approveShellEscalation(sandboxPermissions, justification, exec, standingPolicy)
         : undefined
       const policy = approvedMode === undefined
         ? standingPolicy
