@@ -1,0 +1,15 @@
+[
+  {
+    "name": {
+      "zh-CN": "Shell 偏好",
+      "en": "Shell preferences"
+    },
+    "desc": {
+      "zh-CN": "包含 Shell 选择及运行参数。分享前请清空本机专用的可执行文件路径和 WSL 设置。",
+      "en": "Includes shell selection and execution options. Clear machine-specific executable paths and WSL settings before sharing."
+    },
+    "paths": [
+      "./profiles/<profile>/config/dsh-shell-select/config.json"
+    ]
+  }
+]
