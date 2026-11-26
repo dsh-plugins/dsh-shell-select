@@ -80,5 +80,5 @@ jobs:
       install-command: |
         npm ci
         npm run build
-        node --test tests/*.test.mjs
+        DSH_SHELL_SELECT_TEST_TMP=/var/tmp/dsh-shell-select node --test tests/*.test.mjs
       prepare-command: "npm pack --dry-run"
