@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
+import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 
 import { localPlatform } from '../lib/catalog.js'
 import {
@@ -167,6 +168,25 @@ describe('the tool definition', () => {
 })
 
 describe('running through the tool', () => {
+  it('treats empty optional arguments as omitted and ignores inactive branch arguments', async () => {
+    const { ctx, executor, registrations } = await mountPlugin({ mode: 'danger-full-access' })
+    registerShellTool(ctx, { executor, backgroundEnabled: () => true })
+    const tool = registrations.tools[0]
+    const args = { command: 'echo hi', description: 'Echo a greeting' }
+    const call = { callId: 'optional', rootCallId: 'optional', signal: new AbortController().signal }
+    const expected = await tool.execute(args, call)
+    const empty = { ...args, timeoutMs: '', workdir: '', run_in_background: '', sandbox_permissions: '', justification: '' }
+    assert.deepEqual(validateJsonSchemaValue(tool.parameters, empty), [])
+    assert.ok(validateJsonSchemaValue(tool.parameters, { ...args, timeoutMs: ' ' }).length > 0)
+    const result = await tool.execute(empty, call)
+    assert.equal(result.timeoutMs, expected.timeoutMs)
+    assert.deepEqual(result.shell, expected.shell)
+    assert.deepEqual(result.sandbox, expected.sandbox)
+    assert.deepEqual(tool.presentCall(empty), tool.presentCall(args))
+    const detached = await tool.execute({ ...empty, run_in_background: true, timeoutMs: -1, justification: 'Unused' }, call)
+    assert.equal(detached.kind, 'background')
+  })
+
   it('runs a foreground command and reports the decision\u2019s own shell facts', async () => {
     const { ctx, executor, registrations } = await mountPlugin({
       platform: 'posix',

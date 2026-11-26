@@ -352,15 +352,15 @@ export function registerShellTool(ctx: Context, options: ShellToolOptions): void
           + '5-10 words (shown in the UI). Examples: "ls" → "List files in current directory"; '
           + '"git status" → "Show working tree status".',
       },
-      timeoutMs: { type: 'number', description: 'Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.' },
+      timeoutMs: { oneOf: [{ type: 'number' }, { type: 'string', const: '' }], description: 'Foreground timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.' },
       workdir: { type: 'string', description: 'Absolute working directory for this command. Defaults to the session workspace; a relative path is resolved against it. The directory must exist — it is never substituted.' },
       ...options.backgroundEnabled() ? {
-        run_in_background: { type: 'boolean' as const, description: 'Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.' },
+        run_in_background: { oneOf: [{ type: 'boolean' }, { type: 'string', const: '' }] as const, description: 'Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.' },
       } : {},
       ...escalationModes.length > 0 ? {
         sandbox_permissions: {
           type: 'string' as const,
-          enum: [...escalationModes],
+          enum: [...escalationModes, ''] as const,
           description: 'The wider sandbox mode for a one-shot retry of the exact command the sandbox just denied; widening requires user approval. A narrower mode is ignored, and the command uses the current mode.',
         },
         justification: {
@@ -443,13 +443,14 @@ export function registerShellTool(ctx: Context, options: ShellToolOptions): void
     async execute(args, exec: ToolRunContext) {
       const standingPolicy = resolveSandboxPolicy(exec)
       const effectiveMode = standingPolicy?.mode
-      const requestedMode = args.sandbox_permissions
+      const requestedMode = args.sandbox_permissions === '' ? undefined : args.sandbox_permissions
       const ignoreEscalation = effectiveMode !== undefined && requestedMode !== undefined
         && escalationModes.some(mode => mode === requestedMode)
         && (host.sandbox.WIDER_MODES[requestedMode] ?? []).includes(effectiveMode)
       const sandboxPermissions = ignoreEscalation ? undefined : requestedMode
-      const justification = ignoreEscalation ? undefined : args.justification
-      validateShellArgs(args.command, args.description, args.timeoutMs, sandboxPermissions, justification)
+      const justification = sandboxPermissions === undefined ? undefined : args.justification
+      const timeoutMs = args.run_in_background === true || args.timeoutMs === '' ? undefined : args.timeoutMs
+      validateShellArgs(args.command, args.description, timeoutMs, sandboxPermissions, justification)
       const approvedMode = sandboxPermissions !== undefined && justification !== undefined
         ? await approveShellEscalation(sandboxPermissions, justification, exec, standingPolicy)
         : undefined
@@ -457,14 +458,14 @@ export function registerShellTool(ctx: Context, options: ShellToolOptions): void
         ? standingPolicy
         : { ...(standingPolicy as SandboxExecutionPolicy), mode: approvedMode }
       const workdir = resolveWorkdir(
-        args.workdir,
+        args.workdir === '' ? undefined : args.workdir,
         standingPolicy?.workspaceRoot,
         exec.agent?.session.header.cwd,
       )
       const request = {
         command: args.command,
         ...workdir !== undefined ? { workdir } : {},
-        ...args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {},
+        ...timeoutMs !== undefined ? { timeoutMs } : {},
         dshEnv: ctx.shellEnv.collect(exec),
         ...policy !== undefined ? { sandboxPolicy: policy } : {},
       }
@@ -579,7 +580,7 @@ export function registerShellTool(ctx: Context, options: ShellToolOptions): void
         card: 'terminal',
         title: args.command,
         description: `${args.description}${shell === undefined ? '' : ` — ${shell}`}`,
-        ...args.workdir !== undefined ? { cwd: args.workdir } : {},
+        ...(args.workdir !== undefined && args.workdir !== '') ? { cwd: args.workdir } : {},
       }
     },
     presentResult: (args, result: ToolResult): ToolResultView | undefined => {
